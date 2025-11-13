@@ -1,0 +1,91 @@
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.metrics import accuracy_score
+import requests
+import io
+import tarfile
+import os
+
+url = "https://www.cs.cornell.edu/people/pabo/movie-review-data/review_polarity.tar.gz"
+response = requests.get(url, stream=True)
+response.raise_for_status()
+
+tar = tarfile.open(fileobj=io.BytesIO(response.content), mode="r:gz")
+extract_path = "./cornell_movie_reviews"
+tar.extractall(path=extract_path)
+tar.close()
+
+reviews = []
+labels = []
+
+pos_path = os.path.join(extract_path, "txt_sentoken", "pos")
+for filename in os.listdir(pos_path):
+    with open(os.path.join(pos_path, filename), 'r', encoding='latin-1') as f:
+        reviews.append(f.read())
+        labels.append(1)
+
+neg_path = os.path.join(extract_path, "txt_sentoken", "neg")
+for filename in os.listdir(neg_path):
+    with open(os.path.join(neg_path, filename), 'r', encoding='latin-1') as f:
+        reviews.append(f.read())
+        labels.append(0)
+
+data = pd.DataFrame({'review': reviews, 'label': labels})
+
+data['review'] = data['review'].str.lower()
+
+X = data['review']
+y = data['label']
+X_train_raw, X_test_raw, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+vectorizer_uni_pres = CountVectorizer(ngram_range=(1, 1), binary=True)
+X_train = vectorizer_uni_pres.fit_transform(X_train_raw).toarray()
+X_test = vectorizer_uni_pres.transform(X_test_raw).toarray()
+y_train = y_train.values.reshape(-1, 1)
+y_test = y_test.values.reshape(-1, 1)
+
+X_train = np.insert(X_train, 0, 1, axis=1)
+X_test = np.insert(X_test, 0, 1, axis=1)
+
+def sigmoid(z):
+    return 1 / (1 + np.exp(-z))
+
+def compute_cost(X, y, weights):
+    m = len(y)
+    h = sigmoid(X @ weights)
+    h = np.clip(h, 1e-15, 1 - 1e-15)
+    cost = (-1 / m) * np.sum(y * np.log(h) + (1 - y) * np.log(1 - h))
+    return cost
+
+
+def compute_gradient(X, y, weights):
+    m = len(y)
+    h = sigmoid(X @ weights)
+    gradient = (1 / m) * X.T @ (h - y)
+    return gradient
+
+def gradient_descent(X, y, weights, learning_rate, num_iterations):=-    costs = []
+    for i in range(num_iterations):
+        weights -= learning_rate * compute_gradient(X, y, weights)
+        cost = compute_cost(X, y, weights)
+        costs.append(cost)
+        if i % 100 == 0:
+            print(f"Iteration {i}: Cost = {cost:.4f}")
+    return weights, costs
+
+initial_weights = np.zeros(X_train.shape[1]).reshape(-1, 1)
+
+learning_rate = 0.1
+num_iterations = 1000
+
+trained_weights, costs = gradient_descent(X_train, y_train, initial_weights, learning_rate, num_iterations)
+
+def predict(X, weights):
+    return (sigmoid(X @ weights) >= 0.5).astype(int)
+
+y_pred = predict(X_test, trained_weights)
+
+accuracy = accuracy_score(y_test, y_pred)
+print(f"\nAccuracy of Logistic Regression from scratch: {accuracy:.2%}")

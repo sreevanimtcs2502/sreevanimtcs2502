@@ -1,0 +1,255 @@
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.linear_model import LogisticRegression # For Maximum Entropy
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score, classification_report
+from sklearn.decomposition import TruncatedSVD # Import TruncatedSVD
+import requests
+import io
+import tarfile
+import os
+import nltk
+
+# Download NLTK data if not already present
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
+
+try:
+    nltk.data.find('taggers/averaged_perceptron_tagger')
+except LookupError:
+    nltk.download('averaged_perceptron_tagger')
+
+# Download 'punkt_tab' resource
+try:
+    nltk.data.find('tokenizers/punkt_tab')
+except LookupError:
+    nltk.download('punkt_tab')
+
+try:
+    nltk.data.find('taggers/averaged_perceptron_tagger_eng')
+except LookupError:
+    nltk.download('averaged_perceptron_tagger_eng')
+
+
+# --- Load Data from Cornell Movie Review Dataset ---
+# Download and extract the dataset
+url = "https://www.cs.cornell.edu/people/pabo/movie-review-data/review_polarity.tar.gz"
+response = requests.get(url, stream=True)
+response.raise_for_status()
+
+tar = tarfile.open(fileobj=io.BytesIO(response.content), mode="r:gz")
+# Extract to a specific directory to avoid path issues
+extract_path = "./cornell_movie_reviews"
+tar.extractall(path=extract_path)
+tar.close()
+
+# --- Inspect Extracted Directory Structure ---
+print(f"Contents of {extract_path}:")
+for root, dirs, files in os.walk(extract_path):
+    level = root.replace(extract_path, '').count(os.sep)
+    indent = ' ' * 4 * (level)
+    print(f'{indent}{os.path.basename(root)}/')
+    subindent = ' ' * 4 * (level + 1)
+    for f in files:
+        print(f'{subindent}{f}')
+
+# Read the reviews into a DataFrame
+reviews = []
+labels = []
+
+# Read positive reviews - Corrected path
+pos_path = os.path.join(extract_path, "txt_sentoken", "pos")
+for filename in os.listdir(pos_path):
+    with open(os.path.join(pos_path, filename), 'r', encoding='latin-1') as f:
+        reviews.append(f.read())
+        labels.append(1) # 1 for positive
+
+# Read negative reviews - Corrected path
+neg_path = os.path.join(extract_path, "txt_sentoken", "neg")
+for filename in os.listdir(neg_path):
+    with open(os.path.join(neg_path, filename), 'r', encoding='latin-1') as f:
+        reviews.append(f.read())
+        labels.append(0) # 0 for negative
+
+data = pd.DataFrame({'review': reviews, 'label': labels})
+
+
+# --- Preprocessing ---
+data['review'] = data['review'].str.lower()
+
+# --- Function to train and evaluate models ---
+def train_and_evaluate(X_train, X_test, y_train, y_test, vectorizer_name, include_nb=True):
+    print(f"\n--- Results with {vectorizer_name} ---")
+
+    if include_nb:
+        # Naive Bayes
+        nb_model = MultinomialNB()
+        nb_model.fit(X_train, y_train)
+        y_pred_nb = nb_model.predict(X_test)
+        print("\nNaive Bayes Classifier:")
+        print("Accuracy:", accuracy_score(y_test, y_pred_nb))
+        print(classification_report(y_test, y_pred_nb, zero_division=1))
+
+    # Maximum Entropy (Logistic Regression)
+    lr_model = LogisticRegression(max_iter=1000)
+    y_pred_lr = lr_model.predict(X_test)
+    print("\nMaximum Entropy (Logistic Regression) Classifier:")
+    print("Accuracy:", accuracy_score(y_test, y_pred_lr))
+    print(classification_report(y_test, y_pred_lr, zero_division=1))
+
+    # SVM
+    svm_model = SVC()
+    svm_model.fit(X_train, y_train)
+    y_pred_svm = svm_model.predict(X_test)
+    print("\nSVM Classifier:")
+    print("Accuracy:", accuracy_score(y_test, y_pred_svm))
+    print(classification_report(y_test, y_pred_svm, zero_division=1))
+
+# --- Feature Extraction Functions ---
+def unigrams_pos_features(documents, binary=False):
+    """Generates unigram + POS tag features."""
+    tagged_reviews = []
+    for doc in documents:
+        words = nltk.word_tokenize(doc)
+        tagged_words = nltk.pos_tag(words)
+        # Combine word and POS tag
+        tagged_review = [f"{word}_{pos}" for word, pos in tagged_words]
+        tagged_reviews.append(" ".join(tagged_review))
+
+    vectorizer = CountVectorizer(binary=binary)
+    feature_matrix = vectorizer.fit_transform(tagged_reviews)
+    print(f"\nUnigrams + POS features (binary={binary}) shape: {feature_matrix.shape}")
+    return feature_matrix, vectorizer
+
+def unigrams_position_features(documents, binary=False):
+    """Generates unigram + word position features."""
+    positional_reviews = []
+    for doc in documents:
+        words = nltk.word_tokenize(doc)
+        n_words = len(words)
+        positional_review = []
+        for i, word in enumerate(words):
+            # Simple normalized position (0 to 1)
+            position = i / (n_words - 1) if n_words > 1 else 0
+            positional_review.append(f"{word}_{position:.2f}")
+        positional_reviews.append(" ".join(positional_review))
+
+    vectorizer = CountVectorizer(binary=binary)
+    feature_matrix = vectorizer.fit_transform(positional_reviews)
+    print(f"\nUnigrams + word position features (binary={binary}) shape: {feature_matrix.shape}")
+    return feature_matrix, vectorizer
+
+def top_unigrams_features(documents, vocab_size=2633, binary=False):
+    """Generates features using the top N unigrams."""
+    vectorizer = CountVectorizer(max_features=vocab_size, binary=binary)
+    feature_matrix = vectorizer.fit_transform(documents)
+    return feature_matrix, vectorizer
+
+def generate_features(documents, ngram_range=(1, 1), vocab_size=None, binary=False):
+    """Generates features using CountVectorizer with specified parameters."""
+    vectorizer = CountVectorizer(ngram_range=ngram_range, max_features=vocab_size, binary=binary)
+    feature_matrix = vectorizer.fit_transform(documents)
+    return feature_matrix, vectorizer
+
+def adjectives_features(documents, binary=True):
+    """Generates features using only adjectives."""
+    adjective_reviews = []
+    for doc in documents:
+        words = nltk.word_tokenize(doc)
+        tagged_words = nltk.pos_tag(words)
+        adjectives = [word for word, pos in tagged_words if pos.startswith('JJ')] # JJ, JJR, JJS
+        adjective_reviews.append(" ".join(adjectives))
+
+    vectorizer = CountVectorizer(binary=binary)
+    feature_matrix = vectorizer.fit_transform(adjective_reviews)
+    print(f"\nAdjective features (binary={binary}) shape: {feature_matrix.shape}")
+    return feature_matrix, vectorizer
+
+
+
+X = data['review']
+y = data['label']
+X_train_raw, X_test_raw, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+
+# Unigrams (Frequency)
+X_train_uni_freq, vectorizer_uni_freq = generate_features(X_train_raw, ngram_range=(1, 1), binary=False)
+X_test_uni_freq = vectorizer_uni_freq.transform(X_test_raw)
+train_and_evaluate(X_train_uni_freq, X_test_uni_freq, y_train, y_test, "Unigrams (Frequency)")
+
+# Bigrams (Frequency)
+X_train_bi_freq, vectorizer_bi_freq = generate_features(X_train_raw, ngram_range=(2, 2), binary=False)
+X_test_bi_freq = vectorizer_bi_freq.transform(X_test_raw)
+train_and_evaluate(X_train_bi_freq, X_test_bi_freq, y_train, y_test, "Bigrams (Frequency)")
+
+# Unigrams + Bigrams (Frequency)
+X_train_uni_bi_freq, vectorizer_uni_bi_freq = generate_features(X_train_raw, ngram_range=(1, 2), binary=False)
+X_test_uni_bi_freq = vectorizer_uni_bi_freq.transform(X_test_raw)
+train_and_evaluate(X_train_uni_bi_freq, X_test_uni_bi_freq, y_train, y_test, "Unigrams + Bigrams (Frequency)")
+
+# Unigrams + POS tags (Frequency)
+X_train_uni_pos_freq, vectorizer_uni_pos_freq = unigrams_pos_features(X_train_raw, binary=False)
+X_test_uni_pos_freq = vectorizer_uni_pos_freq.transform(X_test_raw)
+train_and_evaluate(X_train_uni_pos_freq, X_test_uni_pos_freq, y_train, y_test, "Unigrams + POS tags (Frequency)")
+
+# Unigrams + word positions (Frequency)
+X_train_uni_posi_freq, vectorizer_uni_posi_freq = unigrams_position_features(X_train_raw, binary=False)
+X_test_uni_posi_freq = vectorizer_uni_posi_freq.transform(X_test_raw)
+train_and_evaluate(X_train_uni_posi_freq, X_test_uni_posi_freq, y_train, y_test, "Unigrams + word positions (Frequency)")
+
+# Top 2633 unigrams (Frequency)
+X_train_top_uni_freq, vectorizer_top_uni_freq = top_unigrams_features(X_train_raw, vocab_size=2633, binary=False)
+X_test_top_uni_freq = vectorizer_top_uni_freq.transform(X_test_raw)
+train_and_evaluate(X_train_top_uni_freq, X_test_top_uni_freq, y_train, y_test, "Top 2633 unigrams (Frequency)")
+
+
+# --- Presence Features ---
+
+# Unigrams (Presence)
+X_train_uni_pres, vectorizer_uni_pres = generate_features(X_train_raw, ngram_range=(1, 1), binary=True)
+X_test_uni_pres = vectorizer_uni_pres.transform(X_test_raw)
+train_and_evaluate(X_train_uni_pres, X_test_uni_pres, y_train, y_test, "Unigrams (Presence)")
+
+# Bigrams (Presence)
+X_train_bi_pres, vectorizer_bi_pres = generate_features(X_train_raw, ngram_range=(2, 2), binary=True)
+X_test_bi_pres = vectorizer_bi_pres.transform(X_test_raw)
+train_and_evaluate(X_train_bi_pres, X_test_bi_pres, y_train, y_test, "Bigrams (Presence)")
+
+# Unigrams + Bigrams (Presence)
+X_train_uni_bi_pres, vectorizer_uni_bi_pres = generate_features(X_train_raw, ngram_range=(1, 2), binary=True)
+X_test_uni_bi_pres = vectorizer_uni_bi_pres.transform(X_test_raw)
+train_and_evaluate(X_train_uni_bi_pres, X_test_uni_bi_pres, y_train, y_test, "Unigrams + Bigrams (Presence)")
+
+# Unigrams + POS tags (Presence)
+X_train_uni_pos_pres, vectorizer_uni_pos_pres = unigrams_pos_features(X_train_raw, binary=True)
+X_test_uni_pos_pres = vectorizer_uni_pos_pres.transform(X_test_raw)
+# Apply dimensionality reduction
+svd_pos = TruncatedSVD(n_components=1000, random_state=42) # Choose an appropriate number of components
+X_train_uni_pos_pres_reduced = svd_pos.fit_transform(X_train_uni_pos_pres)
+X_test_uni_pos_pres_reduced = svd_pos.transform(X_test_uni_pos_pres)
+train_and_evaluate(X_train_uni_pos_pres_reduced, X_test_uni_pos_pres_reduced, y_train, y_test, "Unigrams + POS tags (Presence) - Reduced", include_nb=False)
+
+
+# Unigrams + word positions (Presence)
+X_train_uni_posi_pres, vectorizer_uni_posi_pres = unigrams_position_features(X_train_raw, binary=True)
+X_test_uni_posi_pres = vectorizer_uni_posi_pres.transform(X_test_raw)
+# Apply dimensionality reduction
+svd_posi = TruncatedSVD(n_components=1000, random_state=42) # Choose an appropriate number of components
+X_train_uni_posi_pres_reduced = svd_posi.fit_transform(X_train_uni_posi_pres)
+X_test_uni_posi_pres_reduced = svd_posi.transform(X_test_uni_posi_pres)
+train_and_evaluate(X_train_uni_posi_pres_reduced, X_test_uni_posi_pres_reduced, y_train, y_test, "Unigrams + word positions (Presence) - Reduced", include_nb=False)
+
+
+# Top 2633 unigrams (Presence)
+X_train_top_uni_pres, vectorizer_top_uni_pres = top_unigrams_features(X_train_raw, vocab_size=2633, binary=True)
+X_test_top_uni_pres = vectorizer_top_uni_pres.transform(X_test_raw)
+train_and_evaluate(X_train_top_uni_pres, X_test_top_uni_pres, y_train, y_test, "Top 2633 unigrams (Presence)")
+
+# Adjectives (Presence)
+X_train_adj_pres, vectorizer_adj_pres = adjectives_features(X_train_raw, binary=True)
+X_test_adj_pres = vectorizer_adj_pres.transform(X_test_raw)
+train_and_evaluate(X_train_adj_pres, X_test_adj_pres, y_train, y_test, "Adjectives (Presence)")
